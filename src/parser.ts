@@ -134,6 +134,8 @@ export default class Parser {
             let i = 1;
             while (this.eat(Token.Asterisk)) i++;
             return new AST.Kind(this.from(start), i);
+        } else if (this.eat(Token.Minus)) {
+            return new AST.Dash(this.span);
         }
         this.error(this.lookaheadSpan, "invalid expression");
         return null;
@@ -149,7 +151,10 @@ export default class Parser {
             return this.simpleAtom(new AST.Call(this.from(start), base, null, array));
         } else if (this.eat(Token.Colon)) {
             const ty = this.atom();
-            return this.simpleAtom(new AST.Ascription(this.from(start), base, ty));
+            return new AST.Ascription(this.from(start), base, ty);
+        } else if (this.eat(Token.PipeArrow)) {
+            const body = this.atom();
+            return new AST.Lambda(this.from(start), base, body);
         } else if (this.eat(Token.Period)) {
             if (!this.eat(Token.Ident)) {
                 this.error(this.span, "expected identifier after period");
@@ -258,7 +263,11 @@ export default class Parser {
         const start = this.start;
         const mut = this.eat(Token.Mut);
         const pure = this.eat(Token.Pure);
+        const refl = this.eat(Token.Refl);
         let atom = this.subatom(this.start, this.primaryAtom(), 0);
+        if (refl) {
+            atom = new AST.Refl(this.from(start), atom);
+        }
         if (pure) {
             atom = new AST.Pure(this.from(start), atom);
         }
@@ -367,13 +376,9 @@ export default class Parser {
             const name = this.span;
             let ty = undefined;
             if (this.eat(Token.LeftAngle)) {
-                ty = this.comma(() => {
-                    this.ignoreGt = true;
-                    const atom = this.atom();
-                    this.ignoreGt = false;
-                    return atom;
-                });
-                console.log(ty);
+                this.ignoreGt = true;
+                ty = this.atomArray();
+                this.ignoreGt = false;
                 if (!this.eat(Token.RightAngle)) {
                     this.error(this.lookaheadSpan, "expected `>`");
                 }
@@ -399,6 +404,9 @@ export default class Parser {
             );
             let body: AST.Statement[] | AST.Atom | null;
             if (this.eat(Token.From)) {
+                body = this.atom();
+                this.eatSemi();
+            } else if (this.eat(Token.Equals)) {
                 body = this.atom();
                 this.eatSemi();
             } else {

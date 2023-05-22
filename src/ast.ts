@@ -28,7 +28,10 @@ export class Assign {
 }
 
 export type Atom =
+    | Dash
+    | Kind
     | Mut
+    | Refl
     | Pure
     | Cast
     | Ascription
@@ -43,11 +46,19 @@ export type Atom =
     | StringLiteral
     | Ident;
 
+export class Dash {
+    constructor(public span: Span) {}
+}
+
 export class Kind {
     constructor(public span: Span, public i: number) {}
 }
 
 export class Mut {
+    constructor(public span: Span, public expr: Atom | null) {}
+}
+
+export class Refl {
     constructor(public span: Span, public expr: Atom | null) {}
 }
 
@@ -57,6 +68,10 @@ export class Pure {
 
 export class Cast {
     constructor(public span: Span, public ty: Atom | null, public expr: Atom | null) {}
+}
+
+export class Lambda {
+    constructor(public span: Span, public expr: Atom | null, public body: Atom | null) {}
 }
 
 export class Ascription {

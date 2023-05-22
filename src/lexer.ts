@@ -1,6 +1,6 @@
 // heavily based on llex.c
 export default class Lexer {
-    private lines: number[] = [];
+    private lines: number[] = [0];
     private srcLength: number;
 
     public buffer: string | bigint | number | null = null;
@@ -62,7 +62,7 @@ export default class Lexer {
         if (isNewline(current)) {
             this.skip();
         }
-        if (this.lines.length === 0 || this.p > this.lines[this.lines.length - 1]) {
+        if (this.p > this.lines[this.lines.length - 1]) {
             this.lines.push(this.p);
         }
     }
@@ -368,6 +368,8 @@ const identifierStopSet = new Set([
     "~",
     "(",
     ")",
+    "[",
+    "]",
     "{",
     "}",
     ":",
@@ -402,6 +404,7 @@ export enum Token {
     As,
     Inline,
     Pure,
+    Refl,
     Export,
     Host,
     Loop,
@@ -499,6 +502,7 @@ const keywords = new Map([
     ["never", Token.Never],
     ["mut", Token.Mut],
     ["pure", Token.Pure],
+    ["refl", Token.Refl],
     ["union", Token.Union],
     ["return", Token.Return],
     ["continue", Token.Continue],
