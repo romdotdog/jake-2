@@ -6,7 +6,7 @@ export default class Lexer {
     public buffer: string | bigint | number | null = null;
     public start = 0;
     public p = 0;
-    constructor(private src: string) {
+    constructor(private src: string, private path: string) {
         this.srcLength = src.length;
     }
 
@@ -31,11 +31,11 @@ export default class Lexer {
         };
     }
 
-    public print(x: Span, path: string, message: string) {
+    public print(x: Span, message: string) {
         const start = this.lineCol(x.start);
         const end = this.lineCol(x.end);
         const ecol = start.line === end.line ? end.col : start.eol;
-        console.log(`${path}:${start.line}:${start.col}: ${message}`);
+        console.log(`${this.path}:${start.line}:${start.col}: ${message}`);
         console.log(this.src.substring(start.sol, start.eol));
         console.log(" ".repeat(start.col - 1) + "^".repeat(ecol - start.col));
     }
@@ -406,7 +406,6 @@ export enum Token {
     Pure,
     Refl,
     Export,
-    Host,
     Loop,
     Type,
     If,

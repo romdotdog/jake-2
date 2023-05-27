@@ -128,7 +128,7 @@ export class Never {
 }
 
 export class Global {
-    constructor(public span: Span, public exported: boolean, public host: boolean, public let_: Let) {}
+    constructor(public span: Span, public exported: boolean, public let_: Let) {}
 }
 
 export type Item = FunctionDeclaration | Global;
@@ -136,7 +136,6 @@ export type Item = FunctionDeclaration | Global;
 export class FunctionSignature {
     constructor(
         public exported: boolean,
-        public host: boolean,
         public name: Span,
         public ty: Array<Atom | null> | undefined,
         public params: Array<Atom | null>,
@@ -158,10 +157,6 @@ export class FunctionDeclaration {
 
     get exported(): boolean {
         return this.sig.exported;
-    }
-
-    get host(): boolean {
-        return this.sig.host;
     }
 }
 

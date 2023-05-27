@@ -13,7 +13,7 @@ export default class Parser {
     private error(span: Span, message: string, important = false) {
         if (!(important || this.quiet)) {
             span.assert();
-            this.lexer.print(span, this.path, message);
+            this.lexer.print(span, message);
         }
     }
 
@@ -54,7 +54,7 @@ export default class Parser {
         return result;
     }
 
-    constructor(private lexer: Lexer, private path: string) {
+    constructor(private lexer: Lexer) {
         this.lookahead = this.lexer.next();
     }
 
@@ -371,7 +371,7 @@ export default class Parser {
         return statements;
     }
 
-    private function_(start: number, exported: boolean, host: boolean): AST.Item | null {
+    private function_(start: number, exported: boolean): AST.Item | null {
         if (this.eat(Token.Ident)) {
             const name = this.span;
             let ty = undefined;
@@ -394,14 +394,7 @@ export default class Parser {
                 returnTy = this.atom();
             }
             const sigSpan = this.from(start);
-            const signature = new AST.FunctionSignature(
-                exported,
-                host,
-                name,
-                ty !== null ? ty : undefined,
-                params,
-                returnTy
-            );
+            const signature = new AST.FunctionSignature(exported, name, ty !== null ? ty : undefined, params, returnTy);
             let body: AST.Statement[] | AST.Atom | null;
             if (this.eat(Token.From)) {
                 body = this.atom();
@@ -428,9 +421,8 @@ export default class Parser {
     private topLevel() {
         const start = this.start;
         const exported = this.eat(Token.Export);
-        const host = this.eat(Token.Host);
         if (this.eat(Token.Function)) {
-            const function_ = this.function_(start, exported, host);
+            const function_ = this.function_(start, exported);
             if (function_ == null) {
                 this.recoverTopLevel();
                 return;
@@ -442,7 +434,7 @@ export default class Parser {
                 this.recoverTopLevel();
                 return;
             }
-            this.source.items.push(new AST.Global(this.from(start), exported, host, let_));
+            this.source.items.push(new AST.Global(this.from(start), exported, let_));
         } else {
             this.error(this.span, "expected `function` or `type` after export");
             this.recoverTopLevel();
