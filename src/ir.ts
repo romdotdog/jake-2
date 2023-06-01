@@ -2,138 +2,273 @@ export class Program {
     constructor(public fns: Fn[]) {}
 }
 
-export abstract class Term {
-    private cachedUniverse: Universe | null = null;
-    constructor(private cachedType: HOType | null) {}
+interface BetaReducible {
+    betaReduce(binding: Binding, target: HOTypeB): HOTypeB;
+}
 
-    protected abstract inferType(): HOType;
-    protected abstract inferUniverse(): Universe;
+export interface Typed<T> {
+    get type(): T;
+}
 
-    get type(): HOType {
-        if (this.cachedType) return this.cachedType;
-        this.cachedType = this.inferType();
-        return this.cachedType;
+export type HOType = Term & Typed<Universe> & BetaReducible;
+type HOTypeB = HOType | Binding;
+export abstract class Term implements Typed<HOType | undefined> {
+    get type(): HOType | undefined {
+        return undefined;
     }
 
-    get universe(): Universe {
-        if (this.cachedUniverse) return this.cachedUniverse;
-        this.cachedUniverse = this.inferUniverse();
-        return this.cachedUniverse;
+    public isPrototypicalType(): this is HOType {
+        return this.type instanceof Universe;
     }
 }
 
-export class Fn extends Term {
+export abstract class Lazy<T extends HOType> extends Term implements Typed<T> {
+    protected abstract inferType(): T;
+
+    constructor(protected cachedType: T | null) {
+        super();
+    }
+
+    get type(): T {
+        if (this.cachedType) return this.cachedType;
+        const res = this.inferType();
+        this.cachedType = res;
+        return res;
+    }
+}
+
+export class Unreachable extends Lazy<Never> {
+    constructor(protected cachedType: Never | null) {
+        super(null);
+    }
+
+    protected inferType(): Never {
+        return new Never();
+    }
+}
+
+export class Fn extends Lazy<FnType> {
     constructor(public param: HOType, public body: Block) {
         super(null);
     }
 
-    protected inferType(): HOType {
+    protected inferType(): FnType {
         return new FnType(this.param.type, this.body.type);
-    }
-
-    protected inferUniverse(): Universe {
-        return new Universe(0);
     }
 }
 
 export class Integer extends Term {
-    constructor(type: HOType, public value: bigint) {
-        super(type);
+    constructor(private cachedType: IntegerType | undefined, public value: bigint) {
+        super();
     }
 
-    protected inferType(): HOType {
-        return this.universe;
+    public coerceTo<T extends IntegerType>(type: T): this is Typed<T> {
+        if (this.cachedType === null) {
+            this.cachedType = type;
+            return true;
+        }
+        return false;
     }
 
-    protected inferUniverse(): Universe {
-        return new Universe(0);
+    get type(): IntegerType | undefined {
+        return this.cachedType;
     }
 }
 
 export class Float extends Term {
-    constructor(type: HOType, public value: number) {
-        super(type);
+    constructor(private cachedType: FloatType | undefined, public value: number) {
+        super();
     }
 
-    protected inferType(): HOType {
-        return this.universe;
+    public coerceTo<T extends FloatType>(type: T): this is Typed<T> {
+        if (this.cachedType === null) {
+            this.cachedType = type;
+            return true;
+        }
+        return false;
     }
 
-    protected inferUniverse(): Universe {
-        return new Universe(0);
+    get type(): FloatType | undefined {
+        return this.cachedType;
     }
 }
 
-export abstract class HOType extends Term {
-    constructor(cachedType: HOType | null) {
-        super(cachedType);
+export class NumberType extends Lazy<Universe> {
+    constructor() {
+        super(null);
     }
 
-    public abstract betaReduce(binding: Binding, target: HOType): HOType;
-}
-
-export class Binding extends HOType {
-    constructor(private hoType: HOType) {
-        super(hoType);
+    protected inferType(): Universe {
+        return new Universe(1);
     }
 
-    protected inferType(): HOType {
-        return this.hoType;
-    }
-
-    protected inferUniverse(): Universe {
-        return this.hoType.universe.infimum();
-    }
-
-    public betaReduce(binding: Binding, target: HOType): HOType {
-        if (this === binding) return target;
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
         return this;
     }
 }
 
-export class FnType extends HOType {
-    constructor(public source: HOType, public target: HOType) {
-        super(null);
+export class IntegerType extends NumberType {}
+export class I32 extends IntegerType {}
+export class I64 extends IntegerType {}
+export class U32 extends IntegerType {}
+export class U64 extends IntegerType {}
+
+export class FloatType extends NumberType {}
+export class F32 extends FloatType {}
+export class F64 extends FloatType {}
+
+export class DefBinding extends Term implements Typed<Universe> {
+    public used = false;
+    constructor(public hoType: HOType) {
+        super();
     }
 
-    protected inferType(): HOType {
-        return this.universe;
+    get type(): Universe {
+        return this.hoType.type;
     }
 
-    protected inferUniverse(): Universe {
-        return this.source.universe.mostGeneral(this.target.universe);
-    }
-
-    public betaReduce(binding: Binding, target: HOType): FnType {
-        return new FnType(this.source.betaReduce(binding, target), this.target.betaReduce(binding, target));
-    }
-}
-
-export class Product extends HOType {
-    constructor(public fields: HOType[]) {
-        super(null);
-    }
-
-    protected inferType(): HOType {
-        return this.universe;
-    }
-
-    protected inferUniverse(): Universe {
-        return this.fields.reduce<Universe>((acc, v) => acc.mostGeneral(v.universe), this.fields[0].universe);
-    }
-
-    public betaReduce(binding: Binding, target: HOType): HOType {
-        return new Product(this.fields.map(v => v.betaReduce(binding, target)));
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
+        return new DefBinding(this.hoType.betaReduce(binding, target) as HOType); // TODO: remove cast
     }
 }
 
-export class Universe extends HOType {
+export class Binding extends Term implements Typed<HOType> {
+    constructor(public def: DefBinding) {
+        def.used = true;
+        super();
+    }
+
+    get type(): HOType {
+        return this.def.hoType;
+    }
+
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
+        if (this.def === binding.def) return target;
+        return this;
+    }
+}
+
+export class FnType extends Lazy<Universe> {
+    constructor(public source: HOTypeB, public target: HOType) {
+        super(null);
+    }
+
+    protected inferType(): Universe {
+        let leftUniverse: Universe;
+        if (this.source instanceof Binding) {
+            leftUniverse = this.source.type.type;
+        } else {
+            leftUniverse = this.source.type;
+        }
+        return leftUniverse.mostGeneral(this.target.type);
+    }
+
+    public betaReduce(binding: Binding, target: HOTypeB): FnType {
+        return new FnType(this.source.betaReduce(binding, target), this.target);
+    }
+}
+
+type UncertainProduct = Product & { fields: Array<Typed<HOType> | UncertainProduct>; isTermFlag: undefined };
+type ProductType = Product & { fields: Array<HOType>; isTermFlag: false } & Typed<Universe>;
+type ProductTerm = Product & { fields: Array<Term & Typed<HOType>>; isTermFlag: true };
+export class Product extends Term implements Typed<HOType | undefined> {
+    private cachedType: HOType | null = null;
+    constructor(public fields: Term[], public isTermFlag: boolean | undefined) {
+        super();
+    }
+
+    private isTerm(): this is ProductTerm {
+        return this.isTermFlag === true;
+    }
+
+    private isType(): this is ProductType {
+        return this.isTermFlag === false;
+    }
+
+    private isUncertain(): this is UncertainProduct {
+        return this.isTermFlag === undefined;
+    }
+
+    public coerceToType(): this is ProductType {
+        if (!this.isUncertain()) return false;
+        for (const field of this.fields) {
+            if (field instanceof Product) {
+                if (!field.coerceToType()) throw new Error();
+            }
+        }
+        return true;
+    }
+
+    public coerceToTerm(): this is ProductTerm {
+        if (!this.isUncertain()) return false;
+        for (const field of this.fields) {
+            if (field instanceof Product) {
+                if (!field.coerceToTerm()) throw new Error();
+            }
+        }
+        return true;
+    }
+
+    get type(): HOType | undefined {
+        if (this.isTermFlag === undefined) return undefined;
+        if (this.cachedType === null) {
+            if (this.isTerm()) {
+                const prod = new Product(
+                    this.fields.map((f: Term & Typed<HOType>) => f.type),
+                    false
+                );
+                if (prod.isType()) {
+                    this.cachedType = prod;
+                } else {
+                    throw new Error();
+                }
+            } else if (this.isType()) {
+                this.cachedType = this.fields.reduce(
+                    (acc: Universe, f: HOType) => acc.mostGeneral(f.type),
+                    new Universe(1)
+                );
+            } else {
+                throw new Error();
+            }
+        }
+        return this.cachedType;
+    }
+
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
+        if (this.isType()) {
+            const prod = new Product(
+                this.fields.map((v: HOType) => v.betaReduce(binding, target)),
+                false
+            );
+            if (prod.isType()) {
+                return prod;
+            }
+        }
+        throw new Error();
+    }
+}
+
+export class Never extends Lazy<Universe> {
+    constructor() {
+        super(null);
+    }
+
+    protected inferType(): Universe {
+        return new Universe(1);
+    }
+
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
+        return this;
+    }
+}
+
+export class Universe extends Lazy<Universe> {
     constructor(public level: number) {
         super(null);
     }
 
     public infimum() {
-        if (this.level === 0) {
+        if (this.level <= 1) {
             throw new Error();
         }
         return new Universe(this.level - 1);
@@ -143,30 +278,22 @@ export class Universe extends HOType {
         return this.level < other.level ? other : this;
     }
 
-    protected inferType(): HOType {
-        return this.universe;
-    }
-
-    protected inferUniverse(): Universe {
+    protected inferType(): Universe {
         return new Universe(this.level + 1);
     }
 
-    public betaReduce(binding: Binding, target: HOType): this {
+    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
         return this;
     }
 }
 
 export class Local extends Term {
     constructor(public initializer: Term) {
-        super(initializer.type);
+        super();
     }
 
-    protected inferType(): HOType {
+    get type() {
         return this.initializer.type;
-    }
-
-    protected inferUniverse(): Universe {
-        return this.initializer.type.universe.infimum();
     }
 }
 

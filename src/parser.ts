@@ -394,9 +394,9 @@ export default class Parser {
             }
             const sigSpan = this.from(start);
             const signature = new AST.FunctionSignature(exported, name, ty !== null ? ty : undefined, params, returnTy);
-            let body: AST.Statement[] | AST.Atom | null | undefined;
-            if (this.eat(Token.From)) {
-                body = this.atom();
+            let body: AST.Statement[] | AST.Implements | AST.Atom | null | undefined;
+            if (this.eat(Token.Implements)) {
+                body = new AST.Implements(this.atom());
                 this.eatSemi();
             } else if (this.eat(Token.LeftBrace)) {
                 body = this.statementsAfterBracket();

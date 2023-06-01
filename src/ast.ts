@@ -33,6 +33,7 @@ export type Atom =
     | Mut
     | Refl
     | Cast
+    | Lambda
     | Ascription
     | Field
     | Binary
@@ -122,6 +123,10 @@ export class Never {
     constructor(public span: Span) {}
 }
 
+export class Implements {
+    constructor(public path: Atom | null) {}
+}
+
 export class Global {
     constructor(public span: Span, public exported: boolean, public let_: Let) {}
 }
@@ -143,7 +148,7 @@ export class FunctionDeclaration {
         public span: Span,
         public fullSpan: Span,
         public sig: FunctionSignature,
-        public body: Statement[] | Atom | null | undefined
+        public body: Statement[] | Implements | Atom | null | undefined
     ) {}
 
     get name(): Span {
