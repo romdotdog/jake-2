@@ -1,4 +1,5 @@
 import * as AST from "./ast.js";
+import * as IR from "./ir.js";
 import Lexer, { Span } from "./lexer.js";
 
 export class Lower {
@@ -12,6 +13,7 @@ export class Lower {
 
     public lower() {
         for (const item of this.ast.items) {
+            this.item(item);
         }
     }
 
@@ -23,90 +25,61 @@ export class Lower {
         }
     }
 
-    private functionDecl(fn: AST.FunctionDeclaration) {}
-
-    private global(global: AST.Global) {
-        
-    }
-}
-
-abstract class Sort {
-    private cachedUniverse: Universe | null = null;
-    constructor(private cachedTy: Sort | null) {}
-
-    protected abstract inferTy(): Sort;
-    protected abstract inferUniverse(): Universe;
-
-    get ty(): Sort {
-        if (this.cachedTy) return this.cachedTy;
-        this.cachedTy = this.inferTy();
-        return this.cachedTy;
+    private type(atom: AST.Atom): IR.HOType | null {
+        const result = this.atom(atom);
+        if (Array.isArray(result)) {
+            return result[1];
+        } else if (result instanceof IR.Term) {
+            this.error(atom.span, "expected type");
+            return null;
+        }
+        return result;
     }
 
-    get universe(): Universe {
-        if (this.cachedUniverse) return this.cachedUniverse;
-        this.cachedUniverse = this.inferUniverse();
-        return this.cachedUniverse;
-    }
-}
+    private atom(atom: AST.Atom): IR.Term | IR.HOType | [IR.Term, IR.HOType] {}
 
-class Fn extends Sort {
-    constructor(public source: Sort, public target: Sort) {
-        super(null);
-    }
-
-    protected inferTy(): Sort {
-        return this.universe;
-    }
-
-    protected inferUniverse(): Universe {
-        return this.source.universe.mostGeneral(this.target.universe);
-    }
-}
-
-class Universe extends Sort {
-    constructor(public level: number) {
-        super(null);
-    }
-
-    public mostGeneral(other: Universe) {
-        if (this.level < other.level) {
-            return other;
-        } else {
-            return this;
+    private pattern2(expr: AST.Atom, ty: AST.Atom): [IR.Binding[], IR.Term] {
+        if (expr instanceof AST.Product) {
+            if (ty instanceof AST.Product) {
+                if (ty.fields.length < expr.fields.length) {
+                }
+            }
         }
     }
 
-    protected inferTy(): Sort {
-        return this.universe;
+    private pattern1(buffer: AST.Atom[], atom: AST.Atom): IR.Binding[] | undefined {
+        if (atom instanceof AST.Ascription) {
+            if (atom.expr !== null) buffer.push(atom.expr);
+            if (atom.ty === null) return undefined;
+            const bindings = buffer.map(v => this.pattern2(v, atom.ty));
+        } else {
+            buffer.push(atom);
+            return undefined;
+        }
     }
 
-    protected inferUniverse(): Universe {
-        return new Universe(this.level + 1);
+    private functionDecl(fn: AST.FunctionDeclaration) {
+        this.scope = this.scope.push();
+        const parameters: IR.Binding = [];
+        if (fn.sig.ty) {
+            for (const pattern of fn.sig.ty) {
+                if (pattern === null) continue;
+            }
+        }
     }
-}
 
-type Binding = Constant | Variable;
-
-class Constant {
-    constructor(public value: Sort) {}
-}
-
-class Variable {
-    constructor(public sort: Sort) {}
+    private global(global: AST.Global) {}
 }
 
 class Scope {
     private parent: Scope | null = null;
-    private variables: Map<string, Binding> = new Map();
-
-    constructor() {}
+    private variables: Map<string, IR.Term> = new Map();
 
     public get(name: string) {
         return this.variables.get(name);
     }
 
-    public find(name: string): Binding | undefined {
+    public find(name: string): IR.Term | undefined {
         return this.get(name) ?? this.parent?.find(name);
     }
 

@@ -7,7 +7,7 @@ export class Root {
 export type Statement = Let | Return | If | Assign | Atom | Item;
 
 export class Let {
-    constructor(public span: Span, public pattern: Atom | null, public expr: Atom | null) {}
+    constructor(public span: Span, public pattern: Atom | null, public expr: Atom | null | undefined) {}
 }
 
 export class If {
@@ -32,7 +32,6 @@ export type Atom =
     | Kind
     | Mut
     | Refl
-    | Pure
     | Cast
     | Ascription
     | Field
@@ -59,10 +58,6 @@ export class Mut {
 }
 
 export class Refl {
-    constructor(public span: Span, public expr: Atom | null) {}
-}
-
-export class Pure {
     constructor(public span: Span, public expr: Atom | null) {}
 }
 
@@ -148,7 +143,7 @@ export class FunctionDeclaration {
         public span: Span,
         public fullSpan: Span,
         public sig: FunctionSignature,
-        public body: Statement[] | Atom | null
+        public body: Statement[] | Atom | null | undefined
     ) {}
 
     get name(): Span {
@@ -179,31 +174,14 @@ export enum BinOp {
     Le,
     Gt,
     Ge,
-    Eq,
+    EqEq,
     Ne,
     And,
     Or,
     Xor,
+    Eq,
     Arrow
 }
-
-export const precedence = new Map([
-    [BinOp.Mul, [10, false]],
-    [BinOp.Div, [10, false]],
-    [BinOp.Mod, [10, false]],
-    [BinOp.Add, [9, false]],
-    [BinOp.Sub, [9, false]],
-    [BinOp.Lt, [8, false]],
-    [BinOp.Le, [8, false]],
-    [BinOp.Gt, [8, false]],
-    [BinOp.Ge, [8, false]],
-    [BinOp.Eq, [7, false]],
-    [BinOp.Ne, [7, false]],
-    [BinOp.And, [6, false]],
-    [BinOp.Arrow, [5, true]],
-    [BinOp.Or, [4, false]],
-    [BinOp.Xor, [3, false]]
-]);
 
 function rev<K, V>(x: [K, V][]): [V, K][] {
     return x.map(([k, v]) => [v, k]);
@@ -227,7 +205,7 @@ const binOps: [string, BinOp][] = [
     ["le", BinOp.Le],
     ["gt", BinOp.Gt],
     ["ge", BinOp.Ge],
-    ["eq", BinOp.Eq],
+    ["eq", BinOp.EqEq],
     ["ne", BinOp.Ne],
     ["and", BinOp.And],
     ["or", BinOp.Or],

@@ -262,14 +262,10 @@ export default class Parser {
     private atom(): AST.Atom | null {
         const start = this.start;
         const mut = this.eat(Token.Mut);
-        const pure = this.eat(Token.Pure);
         const refl = this.eat(Token.Refl);
         let atom = this.subatom(this.start, this.primaryAtom(), 0);
         if (refl) {
             atom = new AST.Refl(this.from(start), atom);
-        }
-        if (pure) {
-            atom = new AST.Pure(this.from(start), atom);
         }
         if (mut) {
             atom = new AST.Mut(this.from(start), atom);
@@ -293,11 +289,9 @@ export default class Parser {
             const atom = this.atom();
             this.eatSemi();
             return new AST.Let(this.from(start), pattern, atom);
-        } else {
-            this.error(this.span, "`=` expected - `let` statements require initializers");
         }
         this.eatSemi();
-        return null;
+        return new AST.Let(this.from(start), pattern, undefined);
     }
 
     private if_(start: number): AST.If | null {
@@ -351,22 +345,27 @@ export default class Parser {
     }
 
     private statements(): AST.Statement[] {
-        const statements = [];
         if (this.eat(Token.LeftBrace)) {
-            while (!this.eat(Token.RightBrace)) {
-                const statement = this.statement();
-                if (statement == null) {
-                    this.recoverStatements();
-                    continue;
-                }
-                statements.push(statement);
-                if (this.lookahead == Token.EOF) {
-                    this.error(this.span, "expected `}` as part of block");
-                    break;
-                }
-            }
+            return this.statementsAfterBracket();
         } else {
             this.error(this.lookaheadSpan, "expected `{` as part of block");
+        }
+        return [];
+    }
+
+    private statementsAfterBracket(): AST.Statement[] {
+        const statements = [];
+        while (!this.eat(Token.RightBrace)) {
+            const statement = this.statement();
+            if (statement == null) {
+                this.recoverStatements();
+                continue;
+            }
+            statements.push(statement);
+            if (this.lookahead == Token.EOF) {
+                this.error(this.span, "expected `}` as part of block");
+                break;
+            }
         }
         return statements;
     }
@@ -395,15 +394,14 @@ export default class Parser {
             }
             const sigSpan = this.from(start);
             const signature = new AST.FunctionSignature(exported, name, ty !== null ? ty : undefined, params, returnTy);
-            let body: AST.Statement[] | AST.Atom | null;
+            let body: AST.Statement[] | AST.Atom | null | undefined;
             if (this.eat(Token.From)) {
                 body = this.atom();
                 this.eatSemi();
-            } else if (this.eat(Token.Equals)) {
-                body = this.atom();
-                this.eatSemi();
+            } else if (this.eat(Token.LeftBrace)) {
+                body = this.statementsAfterBracket();
             } else {
-                body = this.statements();
+                body = undefined;
             }
             return new AST.FunctionDeclaration(sigSpan, this.from(start), signature, body);
         } else {
@@ -476,12 +474,13 @@ const binOps = new Map([
     [Token.LeftAngleEquals, [AST.BinOp.Le, 14]],
     [Token.RightAngle, [AST.BinOp.Gt, 14]],
     [Token.RightAngleEquals, [AST.BinOp.Ge, 14]],
-    [Token.EqualsEquals, [AST.BinOp.Eq, 15]],
+    [Token.EqualsEquals, [AST.BinOp.EqEq, 15]],
     [Token.ExclamationEquals, [AST.BinOp.Ne, 15]],
     [Token.Ampersand, [AST.BinOp.And, 16]],
     [Token.Pipe, [AST.BinOp.Or, 17]],
     [Token.Caret, [AST.BinOp.Xor, 18]],
-    [Token.Arrow, [AST.BinOp.Arrow, 19]]
+    [Token.Arrow, [AST.BinOp.Arrow, 19]],
+    [Token.Equals, [AST.BinOp.Eq, 20]]
 ]);
 
 const unOps = new Map([
