@@ -370,7 +370,7 @@ export default class Parser {
         return statements;
     }
 
-    private function_(start: number, exported: boolean): AST.Item | null {
+    private function_(start: number, exported: boolean, pure: boolean): AST.Item | null {
         if (this.eat(Token.Ident)) {
             const name = this.span;
             let ty = undefined;
@@ -393,7 +393,14 @@ export default class Parser {
                 returnTy = this.atom();
             }
             const sigSpan = this.from(start);
-            const signature = new AST.FunctionSignature(exported, name, ty !== null ? ty : undefined, params, returnTy);
+            const signature = new AST.FunctionSignature(
+                exported,
+                pure,
+                name,
+                ty !== null ? ty : undefined,
+                params,
+                returnTy
+            );
             let body: AST.Statement[] | AST.Implements | AST.Atom | null | undefined;
             if (this.eat(Token.Implements)) {
                 body = new AST.Implements(this.atom());
@@ -419,8 +426,9 @@ export default class Parser {
     private topLevel() {
         const start = this.start;
         const exported = this.eat(Token.Export);
+        const pure = this.eat(Token.Pure);
         if (this.eat(Token.Function)) {
-            const function_ = this.function_(start, exported);
+            const function_ = this.function_(start, exported, pure);
             if (function_ == null) {
                 this.recoverTopLevel();
                 return;
@@ -480,6 +488,7 @@ const binOps = new Map([
     [Token.Pipe, [AST.BinOp.Or, 17]],
     [Token.Caret, [AST.BinOp.Xor, 18]],
     [Token.Arrow, [AST.BinOp.Arrow, 19]],
+    [Token.FatArrow, [AST.BinOp.FatArrow, 19]],
     [Token.Equals, [AST.BinOp.Eq, 20]]
 ]);
 

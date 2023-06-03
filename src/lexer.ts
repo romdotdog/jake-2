@@ -211,8 +211,18 @@ export default class Lexer {
                         return Token.RightAngle;
                     }
                 }
-                case "=":
-                    return this.maybeTakeEquals(Token.Equals, Token.EqualsEquals);
+                case "=": {
+                    const current = this.get();
+                    if (current == ">") {
+                        this.skip();
+                        return Token.FatArrow;
+                    } else if (current == "=") {
+                        this.skip();
+                        return Token.EqualsEquals;
+                    } else {
+                        return Token.Equals;
+                    }
+                }
                 case "!":
                     return this.maybeTakeEquals(Token.Exclamation, Token.ExclamationEquals);
                 case "&":
@@ -226,7 +236,11 @@ export default class Lexer {
                         }
                         return Token.Pipe;
                     } else if (current == "=") {
-                        this.skip();
+                        const current = this.get();
+                        if (current == ">") {
+                            this.skip();
+                            return Token.PipeFatArrow;
+                        }
                         return Token.PipeEquals;
                     } else {
                         return Token.Pipe;
@@ -413,6 +427,7 @@ export enum Token {
     Else,
     Mut,
     Never,
+    Pure,
     Union,
     Return,
     Continue,
@@ -429,6 +444,7 @@ export enum Token {
     Minus,
     MinusEquals,
     Arrow,
+    FatArrow,
     LeftAngle,
     LeftAngleEquals,
     LeftAngleLeftAngle,
@@ -445,6 +461,7 @@ export enum Token {
     AmpersandEquals,
     Pipe,
     PipeArrow,
+    PipeFatArrow,
     PipeEquals,
     Caret,
     CaretEquals,
@@ -498,6 +515,7 @@ const keywords = new Map([
     ["let", Token.Let],
     ["else", Token.Else],
     ["never", Token.Never],
+    ["pure", Token.Pure],
     ["mut", Token.Mut],
     ["refl", Token.Refl],
     ["union", Token.Union],

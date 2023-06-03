@@ -2,19 +2,16 @@ export class Program {
     constructor(public fns: Fn[]) {}
 }
 
-interface BetaReducible {
-    betaReduce(binding: Binding, target: HOTypeB): HOTypeB;
-}
+export type HOType = Term & Typed<Universe>;
+export abstract class Term {
+    constructor(public pure: boolean) {}
 
-export interface Typed<T> {
-    get type(): T;
-}
-
-export type HOType = Term & Typed<Universe> & BetaReducible;
-type HOTypeB = HOType | Binding;
-export abstract class Term implements Typed<HOType | undefined> {
     get type(): HOType | undefined {
         return undefined;
+    }
+
+    public isInferrable(): this is Typed<HOType> {
+        return this.type !== undefined;
     }
 
     public isPrototypicalType(): this is HOType {
@@ -22,44 +19,53 @@ export abstract class Term implements Typed<HOType | undefined> {
     }
 }
 
-export abstract class Lazy<T extends HOType> extends Term implements Typed<T> {
+export abstract class Value extends Term {}
+
+export abstract class Typed<T extends HOType> extends Value {
+    abstract get type(): T | Constant<T>;
+}
+
+export abstract class Lazy<T extends HOType> extends Typed<T> {
     protected abstract inferType(): T;
 
-    constructor(protected cachedType: T | null) {
-        super();
+    constructor(pure: boolean, protected cachedType: T | Constant<T> | null) {
+        super(pure);
     }
 
-    get type(): T {
+    get type(): T | Constant<T> {
         if (this.cachedType) return this.cachedType;
         const res = this.inferType();
-        this.cachedType = res;
-        return res;
+        this.cachedType = res; // if this.cachedType is null, then I extends T
+        return this.cachedType;
     }
 }
 
-export class Unreachable extends Lazy<Never> {
-    constructor(protected cachedType: Never | null) {
-        super(null);
+export class Unreachable<T extends HOType> extends Typed<T> {
+    constructor(protected cachedType: T | Constant<T> | (T extends Never ? null : never)) {
+        super(true);
     }
 
-    protected inferType(): Never {
-        return new Never();
+    get type(): T | Constant<T> {
+        if (this.cachedType) return this.cachedType;
+        // if this.cachedType === null, T extends Never
+        this.cachedType = new Never() as unknown as T;
+        return this.cachedType;
     }
 }
 
 export class Fn extends Lazy<FnType> {
-    constructor(public param: HOType, public body: Block) {
-        super(null);
+    constructor(public param: DefBinding, public body: Block) {
+        super(true, null);
     }
 
     protected inferType(): FnType {
-        return new FnType(this.param.type, this.body.type);
+        return new FnType(this.body.pure, this.param.type, this.body.type);
     }
 }
 
-export class Integer extends Term {
+export class Integer extends Value {
     constructor(private cachedType: IntegerType | undefined, public value: bigint) {
-        super();
+        super(true);
     }
 
     public coerceTo<T extends IntegerType>(type: T): this is Typed<T> {
@@ -75,9 +81,9 @@ export class Integer extends Term {
     }
 }
 
-export class Float extends Term {
+export class Float extends Value {
     constructor(private cachedType: FloatType | undefined, public value: number) {
-        super();
+        super(true);
     }
 
     public coerceTo<T extends FloatType>(type: T): this is Typed<T> {
@@ -95,15 +101,11 @@ export class Float extends Term {
 
 export class NumberType extends Lazy<Universe> {
     constructor() {
-        super(null);
+        super(true, null);
     }
 
     protected inferType(): Universe {
-        return new Universe(1);
-    }
-
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        return this;
+        return new Universe(null, 1);
     }
 }
 
@@ -117,161 +119,99 @@ export class FloatType extends NumberType {}
 export class F32 extends FloatType {}
 export class F64 extends FloatType {}
 
-export class DefBinding extends Term implements Typed<Universe> {
-    public used = false;
+export class DefBinding extends Typed<Universe> {
+    private cachedBinding: Binding | null = null;
+
     constructor(public hoType: HOType) {
-        super();
+        super(true);
     }
 
-    get type(): Universe {
+    get type(): Universe | Constant<Universe> {
         return this.hoType.type;
     }
 
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        return new DefBinding(this.hoType.betaReduce(binding, target) as HOType); // TODO: remove cast
+    get binding(): Binding {
+        if (this.cachedBinding !== null) return this.cachedBinding;
+        this.cachedBinding = new Binding(this);
+        return this.cachedBinding;
     }
 }
 
-export class Binding extends Term implements Typed<HOType> {
+export class Binding extends Typed<HOType> {
+    public name: string | null = null;
+
     constructor(public def: DefBinding) {
-        def.used = true;
-        super();
+        super(true);
     }
 
     get type(): HOType {
         return this.def.hoType;
     }
-
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        if (this.def === binding.def) return target;
-        return this;
-    }
 }
 
 export class FnType extends Lazy<Universe> {
-    constructor(public source: HOTypeB, public target: HOType) {
-        super(null);
+    constructor(public pureFunction: boolean, public source: HOType, public target: HOType) {
+        super(true, null);
     }
 
     protected inferType(): Universe {
-        let leftUniverse: Universe;
-        if (this.source instanceof Binding) {
-            leftUniverse = this.source.type.type;
-        } else {
-            leftUniverse = this.source.type;
+        let l = this.source.type;
+        while (!(l instanceof Universe)) {
+            l = l.type;
         }
-        return leftUniverse.mostGeneral(this.target.type);
-    }
-
-    public betaReduce(binding: Binding, target: HOTypeB): FnType {
-        return new FnType(this.source.betaReduce(binding, target), this.target);
+        let r = this.target.type;
+        while (!(r instanceof Universe)) {
+            r = r.type;
+        }
+        return l.mostGeneral(r);
     }
 }
 
-type UncertainProduct = Product & { fields: Array<Typed<HOType> | UncertainProduct>; isTermFlag: undefined };
-type ProductType = Product & { fields: Array<HOType>; isTermFlag: false } & Typed<Universe>;
-type ProductTerm = Product & { fields: Array<Term & Typed<HOType>>; isTermFlag: true };
-export class Product extends Term implements Typed<HOType | undefined> {
-    private cachedType: HOType | null = null;
-    constructor(public fields: Term[], public isTermFlag: boolean | undefined) {
-        super();
+export class Product extends Value {
+    constructor(public fields: Term[]) {
+        super(fields.every(f => f.pure));
+    }
+}
+
+export class ProductTerm extends Lazy<ProductType> {
+    constructor(cachedType: ProductType | Constant<ProductType> | null, public fields: Typed<HOType>[]) {
+        super(
+            fields.every(f => f.pure),
+            cachedType
+        );
     }
 
-    private isTerm(): this is ProductTerm {
-        return this.isTermFlag === true;
+    protected inferType(): ProductType {
+        return new ProductType(
+            null,
+            this.fields.map(f => f.type)
+        );
+    }
+}
+
+export class ProductType extends Lazy<Universe> {
+    constructor(cachedType: Universe | Constant<Universe> | null, public fields: HOType[]) {
+        super(true, cachedType);
     }
 
-    private isType(): this is ProductType {
-        return this.isTermFlag === false;
-    }
-
-    private isUncertain(): this is UncertainProduct {
-        return this.isTermFlag === undefined;
-    }
-
-    public coerceToType(): this is ProductType {
-        if (!this.isUncertain()) return false;
-        for (const field of this.fields) {
-            if (field instanceof Product) {
-                if (!field.coerceToType()) throw new Error();
-            }
-        }
-        return true;
-    }
-
-    public coerceToTerm(): this is ProductTerm {
-        if (!this.isUncertain()) return false;
-        for (const field of this.fields) {
-            if (field instanceof Product) {
-                if (!field.coerceToTerm()) throw new Error();
-            }
-        }
-        return true;
-    }
-
-    get type(): HOType | undefined {
-        if (this.isTermFlag === undefined) return undefined;
-        if (this.cachedType === null) {
-            if (this.isTerm()) {
-                const prod = new Product(
-                    this.fields.map((f: Term & Typed<HOType>) => f.type),
-                    false
-                );
-                if (prod.isType()) {
-                    this.cachedType = prod;
-                } else {
-                    throw new Error();
-                }
-            } else if (this.isType()) {
-                this.cachedType = this.fields.reduce(
-                    (acc: Universe, f: HOType) => acc.mostGeneral(f.type),
-                    new Universe(1)
-                );
-            } else {
-                throw new Error();
-            }
-        }
-        return this.cachedType;
-    }
-
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        if (this.isType()) {
-            const prod = new Product(
-                this.fields.map((v: HOType) => v.betaReduce(binding, target)),
-                false
-            );
-            if (prod.isType()) {
-                return prod;
-            }
-        }
-        throw new Error();
+    protected inferType(): Universe {
+        return new Universe(null, 1);
     }
 }
 
 export class Never extends Lazy<Universe> {
     constructor() {
-        super(null);
+        super(true, null);
     }
 
     protected inferType(): Universe {
-        return new Universe(1);
-    }
-
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        return this;
+        return new Universe(null, 1);
     }
 }
 
 export class Universe extends Lazy<Universe> {
-    constructor(public level: number) {
-        super(null);
-    }
-
-    public infimum() {
-        if (this.level <= 1) {
-            throw new Error();
-        }
-        return new Universe(this.level - 1);
+    constructor(protected cachedType: Universe | Constant<Universe> | null, public level: number) {
+        super(true, cachedType);
     }
 
     public mostGeneral(other: Universe) {
@@ -279,17 +219,13 @@ export class Universe extends Lazy<Universe> {
     }
 
     protected inferType(): Universe {
-        return new Universe(this.level + 1);
-    }
-
-    public betaReduce(binding: Binding, target: HOTypeB): HOTypeB {
-        return this;
+        return new Universe(null, this.level + 1);
     }
 }
 
-export class Local extends Term {
+export class Local extends Value {
     constructor(public initializer: Term) {
-        super();
+        super(initializer.pure);
     }
 
     get type() {
@@ -297,14 +233,32 @@ export class Local extends Term {
     }
 }
 
+export class Constant<T extends HOType> extends Local {
+    constructor(public initializer: T) {
+        super(initializer);
+    }
+
+    get type(): typeof this.initializer.type {
+        return this.initializer.type;
+    }
+}
+
 export class Block {
-    constructor(public body: Statement[], public type: HOType) {}
+    constructor(public body: Statement[], public type: HOType, public pure: boolean) {}
+
+    public static trivial(term: Typed<HOType>): Block {
+        return new Block([new Return(term)], term.type, term.pure);
+    }
 }
 
 export type Statement = InitializeLocal | Return;
 
 export class InitializeLocal {
     constructor(public local: Local) {}
+}
+
+export class SideEffect {
+    constructor(public term: Term) {}
 }
 
 export class Return {

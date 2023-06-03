@@ -136,6 +136,7 @@ export type Item = FunctionDeclaration | Global;
 export class FunctionSignature {
     constructor(
         public exported: boolean,
+        public pure: boolean,
         public name: Span,
         public ty: Array<Atom | null> | undefined,
         public params: Array<Atom | null>,
@@ -185,7 +186,8 @@ export enum BinOp {
     Or,
     Xor,
     Eq,
-    Arrow
+    Arrow,
+    FatArrow
 }
 
 function rev<K, V>(x: [K, V][]): [V, K][] {
