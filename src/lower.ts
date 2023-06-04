@@ -27,12 +27,12 @@ export class Lower {
 
     private type(atom: AST.Atom | null): IR.HOType {
         if (atom === null) {
-            return new IR.Never();
+            return new IR.Never(null);
         }
         const result = this.atom(atom);
         if (!result.isPrototypicalType()) {
             this.error(atom.span, "expected type, got term");
-            return new IR.Never();
+            return new IR.Never(null);
         }
         return result;
     }
@@ -48,7 +48,7 @@ export class Lower {
         if (atom instanceof AST.Dash) {
             this.error(atom.span, "- is not allowed in this position");
         } else if (atom instanceof AST.Kind) {
-            return new IR.Universe(null, atom.i);
+            return new IR.Universe(null, atom.i - 1);
         } else if (atom instanceof AST.Mut) {
             this.error(atom.span, "mut is not allowed in this position");
         } else if (atom instanceof AST.Refl) {
@@ -60,7 +60,7 @@ export class Lower {
         } else if (atom instanceof AST.Binary) {
             const isArrow = atom.kind === AST.BinOp.Arrow;
             if (isArrow || atom.kind == AST.BinOp.FatArrow) {
-                return this.push(() => new IR.FnType(isArrow, this.type(atom.left), this.type(atom.right)));
+                return this.push(() => new IR.FnType(null, isArrow, this.type(atom.left), this.type(atom.right)));
             } else {
                 this.error(atom.span, "TODO: calls");
             }
@@ -74,11 +74,11 @@ export class Lower {
             let isTerm: boolean | undefined = false;
             const fields: IR.Term[] = [];
             for (let field of atom.fields) {
-                if (field === null) return new IR.Unreachable(null);
+                if (field === null) return IR.Unreachable.never();
                 if (field instanceof AST.Ascription) {
                     this.error(atom.span, "TODO: functions");
                     field = field.ty;
-                    if (field === null) return new IR.Unreachable(null);
+                    if (field === null) return IR.Unreachable.never();
                 }
                 const res = this.atom(field);
                 if (res.type === undefined) {
@@ -90,22 +90,28 @@ export class Lower {
             }
             let prod: IR.Term;
             if (isTerm === true) {
-                prod = new IR.ProductTerm(null, fields as IR.Typed<IR.HOType>[]);
+                prod = new IR.Product(
+                    new IR.Product(
+                        new IR.Universe(null, 0),
+                        fields.map(f => f.type)
+                    ),
+                    fields as IR.Term[]
+                );
             } else if (isTerm === false) {
-                prod = new IR.ProductType(null, fields as IR.HOType[]);
+                prod = new IR.Product(new IR.Universe(null, 0), fields as IR.HOType[]);
             } else {
-                prod = new IR.Product(fields);
+                prod = new IR.Product(null, fields);
             }
             return prod;
         } else if (atom instanceof AST.IntegerLiteral) {
-            return new IR.Integer(undefined, atom.value);
+            return new IR.Number(new IR.NumberType(null), atom.value);
         } else if (atom instanceof AST.NumberLiteral) {
-            return new IR.Float(undefined, atom.value);
+            return new IR.Float(new IR.FloatType(null), atom.value);
         } else if (atom instanceof AST.Ident) {
             const res = this.scope.find(atom.span.link(this.lexer.getSource()));
             if (res === undefined) {
                 this.error(atom.span, "not found");
-                return new IR.Unreachable(null);
+                return IR.Unreachable.never();
             }
             return res;
         }
@@ -180,12 +186,13 @@ export class Lower {
             body = fn.body;
         }
 
-        const block = this.block(blockBody, body);
+        if (body instanceof AST.Implements) throw new Error();
+        const block = Array.isArray(body) ? this.block(blockBody, body) : this.exprAsBlock(blockBody, body);
         let firstParamDef = paramDefs.pop() ?? new IR.DefBinding(IR.Product.type([]));
-        let fnTerm = new IR.Fn(firstParamDef, block);
+        let fnTerm = new IR.Fn(null, firstParamDef, block);
         let nextParamDef: IR.DefBinding | undefined;
         while ((nextParamDef = paramDefs.pop()) !== undefined) {
-            fnTerm = new IR.Fn(nextParamDef, IR.Block.trivial(fnTerm));
+            fnTerm = new IR.Fn(null, nextParamDef, IR.Block.trivial(fnTerm));
         }
         const name = fn.sig.name.link(this.lexer.getSource());
         this.scope.set(name, new IR.Local(fnTerm));
@@ -219,6 +226,13 @@ export class Lower {
                 if (pattern instanceof AST.Ascription) {
                     if (pattern.expr === null) continue;
                     type = this.type(pattern.ty);
+                    const coercion = init.coerce(type);
+                    if (coercion === undefined) {
+                        this.error(stmt.span, "type mismatch");
+                        init = IR.Unreachable.never();
+                    } else {
+                        init = coercion;
+                    }
                     pattern = pattern.expr;
                 }
                 for (const [name, term] of this.pattern(pattern, init)) {
@@ -226,7 +240,6 @@ export class Lower {
                     this.scope.set(name, local);
                     body.push(new IR.InitializeLocal(local));
                 }
-                // TODO: typecheck
             }
         }
     }
