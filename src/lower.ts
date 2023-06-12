@@ -27,12 +27,12 @@ export class Lower {
 
     private type(atom: AST.Atom | null): IR.HOType {
         if (atom === null) {
-            return new IR.Never(null);
+            return IR.Sum.never();
         }
         const result = this.atom(atom);
         if (!result.isPrototypicalType()) {
             this.error(atom.span, "expected type, got term");
-            return new IR.Never(null);
+            return IR.Sum.never();
         }
         return result;
     }
@@ -119,7 +119,7 @@ export class Lower {
         throw new Error();
     }
 
-    private pattern(pattern: AST.Atom, param: IR.Term): [string, IR.Local][] {
+    private pattern(pattern: AST.Atom, param: IR.Term): [string, IR.Term][] {
         if (pattern instanceof AST.Product) {
             // TODO: calls
             throw new Error();
@@ -128,7 +128,7 @@ export class Lower {
             if (param instanceof IR.Binding && param.name === null) {
                 param.name = name;
             }
-            return [[name, new IR.Local(param)]];
+            return [[name, param]];
         }
         throw new Error();
     }
@@ -156,8 +156,8 @@ export class Lower {
                 if (res === undefined) continue;
                 for (const [pattern, def] of res) {
                     paramDefs.push(def);
-                    for (const [name, local] of this.pattern(pattern, def.binding)) {
-                        this.scope.set(name, local);
+                    for (const [name, term] of this.pattern(pattern, def.binding)) {
+                        this.scope.set(name, term);
                     }
                 }
             }
@@ -187,8 +187,8 @@ export class Lower {
         }
 
         if (body instanceof AST.Implements) throw new Error();
-        const block = Array.isArray(body) ? this.block(blockBody, body) : this.exprAsBlock(blockBody, body);
-        let firstParamDef = paramDefs.pop() ?? new IR.DefBinding(IR.Product.type([]));
+        const block = Array.isArray(body) ? this.block(body, blockBody) : this.exprAsBlock(blockBody, body);
+        let firstParamDef = paramDefs.pop() ?? new IR.DefBinding(new IR.Product(new IR.Universe(null, 0), []));
         let fnTerm = new IR.Fn(null, firstParamDef, block);
         let nextParamDef: IR.DefBinding | undefined;
         while ((nextParamDef = paramDefs.pop()) !== undefined) {
@@ -198,12 +198,26 @@ export class Lower {
         this.scope.set(name, new IR.Local(fnTerm));
     }
 
+    private formBlock(body: IR.Statement[]): IR.Block {
+        let pure = true;
+        for (const stmt of body) {
+            if (stmt instanceof IR.SideEffect) {
+                pure = false;
+            } else if (stmt instanceof IR.InitializeLocal) {
+                pure &&= stmt.local.pure;
+            } else if (stmt instanceof IR.Return) {
+                pure &&= stmt.term.pure;
+            }
+        }
+    }
+
     private exprAsBlock(body: IR.Statement[], atom: AST.Atom): IR.Block {
         const term = this.atom(atom);
         body.push(new IR.Return(term));
     }
 
-    private block(body: IR.Statement[], stmts: AST.Statement[]): IR.Block {
+    private branch(stmts: AST.Statement[], body: IR.Statement[] = []): IR.Branch {
+        let pure = true;
         for (const stmt of stmts) {
             if (stmt instanceof AST.Let) {
                 let pattern = stmt.pattern;
@@ -235,14 +249,79 @@ export class Lower {
                     }
                     pattern = pattern.expr;
                 }
+                pure &&= init.pure;
                 for (const [name, term] of this.pattern(pattern, init)) {
                     const local = new IR.Local(term);
                     this.scope.set(name, local);
                     body.push(new IR.InitializeLocal(local));
                 }
+            } else if (stmt instanceof AST.Assign) {
+                if (stmt.left === null || stmt.right === null) continue;
+                const init = this.atom(stmt.right);
+                pure &&= init.pure;
+                for (let [name, term] of this.pattern(stmt.left, init)) {
+                    const local = this.scope.find(name);
+                    if (local === undefined || !(local instanceof IR.Local)) continue;
+                    let newTerm = term.coerce(local.type);
+                    if (newTerm === undefined) {
+                        this.error(stmt.span, "type mismatch");
+                        term = IR.Unreachable.never();
+                        newTerm = term;
+                    }
+                    const newLocal = new IR.Local(term);
+                    const newCoercedLocal = new IR.Local(newTerm);
+                    body.push(new IR.InitializeLocal(newLocal));
+                    this.scope.set(name, newLocal);
+                    if (!this.scope.has(name)) {
+                        this.scope.assign(name, local, newCoercedLocal);
+                    }
+                }
+            } else if (stmt instanceof AST.Return) {
+                if (stmt.expr === null) continue;
+                let init: IR.Term;
+                if (stmt.expr === undefined) {
+                    init = new IR.Product(new IR.Product(new IR.Universe(null, 0), []), []);
+                } else {
+                    init = this.atom(stmt.expr);
+                }
+                //returnType = new IR.Sum(null, [returnType, init.type]);
+                pure &&= init.pure;
+                body.push(new IR.Return(init));
+            } else if (stmt instanceof AST.If) {
+                if (stmt.cond === null) continue;
+                const cond = this.atom(stmt.cond);
+                pure &&= cond.pure;
+
+                const trueScope = this.scope.push(cond.pure);
+                this.scope = trueScope;
+                const trueBranch = this.branch(stmt.body);
+                this.scope = trueScope.pop();
+
+                let falseBranchStmts: AST.Statement[];
+                if (stmt.else_ === undefined) {
+                    falseBranchStmts = [];
+                } else if (stmt.else_ instanceof AST.If) {
+                    falseBranchStmts = [stmt.else_];
+                } else {
+                    falseBranchStmts = stmt.else_;
+                }
+
+                const falseScope = this.scope.push(cond.pure);
+                this.scope = falseScope;
+                const falseBranch = this.branch(falseBranchStmts);
+                this.scope = falseScope.pop();
+
+                body.push(new IR.If(cond, trueBranch, falseBranch));
+                pure &&= trueBranch.pure;
+                pure &&= falseBranch.pure;
+
+                this.scope.fuse(trueScope, falseScope);
             }
         }
+        return new IR.Branch(pure, body);
     }
+
+    private block(stmts: AST.Statement[], body: IR.Statement[]): IR.Block {}
 
     private global(global: AST.Global) {}
 }
@@ -251,6 +330,31 @@ class Scope {
     private parent: Scope | null = null;
     private i = 0;
     private variables: Map<string, IR.Term> = new Map();
+    private assignments: Map<string, [oldLocal: IR.Local, newLocal: IR.Local]> = new Map();
+    private pure = true;
+
+    public fuse(b1: Scope, b2: Scope) {
+        for (const [name, [oldLocal, newLocal]] of b1.assignments.entries()) {
+            let alternateLocal: IR.Local;
+            let alternateAssignment = b2.assignments.get(name);
+            if (alternateAssignment === undefined) {
+                alternateLocal = oldLocal;
+            } else {
+                alternateLocal = alternateAssignment[1];
+            }
+            this.set(name, new IR.Phi(b1.pure && b2.pure, null, [newLocal, alternateLocal]));
+        }
+        for (const [name, [oldLocal, newLocal]] of b2.assignments.entries()) {
+            let alternateAssignment = b1.assignments.get(name);
+            if (alternateAssignment === undefined) {
+                this.set(name, new IR.Phi(b1.pure && b2.pure, null, [oldLocal, newLocal]));
+            }
+        }
+    }
+
+    public has(name: string) {
+        return this.variables.has(name);
+    }
 
     public get(name: string) {
         return this.variables.get(name);
@@ -260,14 +364,19 @@ class Scope {
         this.variables.set(name, value);
     }
 
+    public assign(name: string, oldLocal: IR.Local, newLocal: IR.Local) {
+        this.assignments.set(name, [oldLocal, newLocal]);
+    }
+
     public find(name: string): IR.Term | undefined {
         return this.get(name) ?? this.parent?.find(name);
     }
 
-    public push(): Scope {
+    public push(pure: boolean = true): Scope {
         const scope = new Scope();
         scope.parent = this;
         scope.i = this.i;
+        scope.pure = pure;
         return scope;
     }
 

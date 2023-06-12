@@ -51,12 +51,12 @@ export abstract class Lazy<T extends HOType> extends Value<T> {
 }
 
 export class Unreachable<T extends HOType> extends Value<T> {
-    constructor(protected cachedType: T | HOTConstant<T> | (T extends Never ? null : never)) {
+    constructor(protected cachedType: T | HOTConstant<T> | (T extends Sum ? null : never)) {
         super(true);
     }
 
-    public static never(): Unreachable<Never> {
-        return new Unreachable<Never>(null);
+    public static never(): Unreachable<Sum> {
+        return new Unreachable<Sum>(null);
     }
 
     public coerce<T extends HOType>(type: T): Unreachable<T> {
@@ -65,8 +65,8 @@ export class Unreachable<T extends HOType> extends Value<T> {
 
     get type(): T | HOTConstant<T> {
         if (this.cachedType) return this.cachedType;
-        // if this.cachedType === null, T extends Never
-        this.cachedType = new Never(null) as unknown as T;
+        // if this.cachedType === null, T extends Sum
+        this.cachedType = new Sum(null, []) as unknown as T;
         return this.cachedType;
     }
 }
@@ -317,32 +317,7 @@ export class AmbiguousProductType extends Lazy<Universe> {
         return new Universe(null, 1);
     }
 }
-/*
-export class ProductType extends Lazy<Universe> {
-    constructor(cachedType: Universe | HOTConstant<Universe> | null, public fields: HOType[]) {
-        super(true, cachedType);
-    }
 
-    public isSubtypeOf(type: HOType): boolean {
-        return regularizeNominality(type, type => {
-            if (type instanceof ProductType) {
-                return true;
-            }
-            return false;
-        });
-    }
-
-    public coerce(type: HOType): Term | undefined {
-        if (this.type.isSubtypeOf(type)) {
-            return new ProductType(type, this.fields);
-        }
-    }
-
-    protected inferType(): Universe {
-        return new Universe(null, 0);
-    }
-}
-*/
 type ProductTypes = AmbiguousProductType | Product<Universe> | Universe;
 export class Product<T extends ProductTypes> extends Value<T> {
     private cachedType: T | HOTConstant<T>;
@@ -391,19 +366,68 @@ export class Product<T extends ProductTypes> extends Value<T> {
     }
 }
 
-export class Never extends Lazy<Universe> {
-    constructor(protected cachedType: Universe | HOTConstant<Universe> | null) {
+export class Sum extends Lazy<Universe> {
+    constructor(protected cachedType: Universe | HOTConstant<Universe> | null, public summands: HOType[]) {
         super(true, cachedType);
     }
 
-    public coerce(type: HOType): Term | undefined {
+    public static never(): Sum {
+        return new Sum(null, []);
+    }
+
+    public static create(cachedType: Universe | HOTConstant<Universe> | null, summands: HOType[]): HOType {
+        const sum = new Sum(cachedType, summands);
+        return sum.updateRedundancy();
+    }
+
+    public add(types: HOType[]): HOType {
+        this.summands.push(...types);
+        return this.updateRedundancy();
+    }
+
+    private updateRedundancy(): HOType {
+        for (let i = 0; i < this.summands.length; ) {
+            const summand = this.summands[i];
+            if (summand instanceof Sum) {
+                this.summands.splice(i, 1, ...summand.summands);
+            } else {
+                i += 1;
+            }
+        }
+
+        for (let i = 0; i < this.summands.length; ) {
+            const summand = this.summands[i];
+            let isRedundant = false;
+            for (const otherSummand of this.summands) {
+                if (summand.isSubtypeOf(otherSummand)) {
+                    isRedundant = true;
+                    break;
+                }
+            }
+            if (isRedundant) {
+                this.summands.splice(i, 1);
+            } else {
+                i += 1;
+            }
+        }
+
+        if (this.summands.length === 1) {
+            return this.summands[0];
+        } else {
+            return this;
+        }
+    }
+
+    public coerce(type: HOType): Term<HOType> | undefined {
         if (this.type.isSubtypeOf(type)) {
-            return new Never(type);
+            return Sum.create(type, this.summands);
         }
     }
 
     public isSubtypeOf(type: HOType): boolean {
-        return true;
+        return regularizeNominality(type, type => {
+            return this.summands.every(s => s.isSubtypeOf(type));
+        });
     }
 
     protected inferType(): Universe {
@@ -437,19 +461,54 @@ export class Universe extends Lazy<Universe> {
     }
 }
 
+export class Phi<T extends HOType = HOType> extends Term<T> {
+    cachedType: T | HOTConstant<T>;
+    constructor(
+        pure: boolean,
+        cachedType: T | HOTConstant<T> | (Sum extends T ? null : never),
+        public locals: Local<T>[]
+    ) {
+        super(pure);
+        locals = locals.flatMap(l => (l.initializer instanceof Phi ? l.initializer.locals : l));
+        if (cachedType === null) {
+            // Sum extends T
+            this.cachedType = Sum.create(
+                null,
+                locals.map(l => l.type)
+            ) as T;
+        } else {
+            this.cachedType = cachedType;
+        }
+    }
+
+    public coerce(type: HOType): Term<HOType> | undefined {
+        const newLocals = [];
+        for (const local of this.locals) {
+            const coercion = local.coerce(type);
+            if (coercion === undefined) return undefined;
+            newLocals.push(coercion);
+        }
+        return new Phi(this.pure, type, newLocals);
+    }
+
+    get type(): T | HOTConstant<T> {
+        return this.locals[0].type;
+    }
+}
+
 export class Local<T extends HOType = HOType> extends Value<T> {
     constructor(public initializer: Term<T>) {
         super(initializer.pure);
     }
 
-    public coerce(type: HOType): Term | undefined {
+    public coerce(type: HOType): Local | undefined {
         const inner = this.initializer.coerce(type);
         if (inner !== undefined) {
             return new Local(inner);
         }
     }
 
-    get type(): typeof this.initializer.type {
+    get type() {
         return this.initializer.type;
     }
 }
@@ -459,7 +518,7 @@ export class Constant<T extends HOType, V extends Value<T>> extends Local<T> {
         super(initializer);
     }
 
-    public coerce(type: HOType): Term | undefined {
+    public coerce(type: HOType): Constant<HOType, Value<HOType>> | undefined {
         const inner = this.initializer.coerce(type);
         if (inner !== undefined) {
             return new Constant(inner);
@@ -478,13 +537,13 @@ export class Constant<T extends HOType, V extends Value<T>> extends Local<T> {
 }
 
 export class Block extends Value<HOType> {
-    constructor(pure: boolean, public body: Statement[], protected cachedType: HOType | HOTConstant<HOType>) {
-        super(pure);
+    constructor(public branch: Branch, protected cachedType: HOType | HOTConstant<HOType>) {
+        super(branch.pure);
     }
 
     public coerce(type: HOType): Term<HOType> | undefined {
         if (this.type.isSubtypeOf(type)) {
-            return new Block(this.pure, this.body, type);
+            return new Block(this.branch, type);
         }
     }
 
@@ -493,18 +552,26 @@ export class Block extends Value<HOType> {
     }
 
     public static trivial(term: Value<HOType>): Block {
-        return new Block(term.pure, [new Return(term)], term.type);
+        return new Block(new Branch(term.pure, [new Return(term)]), term.type);
     }
 }
 
-export type Statement = InitializeLocal | Return;
+export class Branch {
+    constructor(public pure: boolean, public body: Statement[]) {}
+}
+
+export type Statement = InitializeLocal | Return | SideEffect | If;
 
 export class InitializeLocal {
     constructor(public local: Local) {}
 }
 
 export class SideEffect {
-    constructor(public term: Term) {}
+    constructor(public term: Term & { pure: false }) {}
+}
+
+export class If {
+    constructor(public cond: Term, public t: Branch, public f: Branch) {}
 }
 
 export class Return {
