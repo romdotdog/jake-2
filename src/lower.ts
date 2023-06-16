@@ -2,6 +2,7 @@ import * as AST from "./ast.js";
 import * as IR from "./ir.js";
 import Lexer, { Span } from "./lexer.js";
 
+
 export class Lower {
     private scope = new Scope();
     private error(span: Span, message: string) {
@@ -15,6 +16,7 @@ export class Lower {
         for (const item of this.ast.items) {
             this.item(item);
         }
+        console.log(this.scope);
     }
 
     private item(item: AST.FunctionDeclaration | AST.Global) {
@@ -26,29 +28,76 @@ export class Lower {
     }
 
     private type(atom: AST.Atom | null): IR.HOType {
-        if (atom === null) {
-            return IR.Sum.never();
-        }
-        const result = this.atom(atom);
-        if (!result.isPrototypicalType()) {
-            this.error(atom.span, "expected type, got term");
+        const result = this.atom(atom, false);
+        if (!IR.isType(result)) {
+            this.error(atom!.span, "expected type, got term"); // sum types and unreachable are always types
             return IR.Sum.never();
         }
         return result;
     }
 
-    private push<T>(f: () => T): T {
-        this.scope = this.scope.push();
-        const res = f();
-        this.scope = this.scope.pop();
-        return res;
+    private innerCall(span: Span, fnType: IR.HOType, arg: IR.Term, ctx: IR.UnificationContext): boolean {
+        if (IR.Sum.isNever(fnType)) {
+            return false;
+        }
+        if (!(fnType instanceof IR.FnType)) {
+            this.error(span, "base does not have a call signature");
+            return false;
+        }
+        const inferred = fnType.infer();
+        if (inferred) {
+            return this.innerCall(span, inferred, arg, ctx);
+        }
+        if (arg.type.isSubtypeOf(fnType.source, ctx)) {
+            return true;
+        }
+        this.error(span, "type mismatch");
+        return false;
     }
 
-    private atom(atom: AST.Atom): IR.Term {
-        if (atom instanceof AST.Dash) {
+    private call(span: Span, fn: IR.Term, argAtom: AST.Atom | null, ctx: IR.UnificationContext = new Map()): IR.Term {
+        // TODO: dash
+        const defs: IR.DefBinding[] = [];
+        const arg = this.atom(argAtom);
+        if (this.innerCall(span, fn.type, arg, ctx)) {
+            while(true) {
+                const fnType = fn.type as IR.FnType;
+                if (fnType.source instanceof IR.DefBinding) {
+                    const inferred = ctx.get(fnType.source);
+                    if (inferred !== undefined) {
+                        fn = new IR.Call(fn, inferred);
+                        continue;
+                    } else if (fnType.source.inferrable) {
+                        const def = new IR.DefBinding(fnType.source);
+                        def.name = fnType.source.name;
+                        def.inferrable = true;
+                        defs.push(def);
+                        fn = new IR.Call(fn, def.binding);
+                        continue;
+                    }
+                }
+                fn = new IR.Call(fn, arg);
+                let nextDef: IR.DefBinding | undefined;
+                while ((nextDef = defs.pop()) !== undefined) {
+                    fn = new IR.Fn(nextDef, IR.Block.trivial(fn));
+                }
+                return fn;
+            }
+        }
+        return new IR.Unreachable();
+    }
+
+    private atom(atom: AST.Atom | null, term?: boolean): IR.Term {
+        if (atom === null) {
+            if (term === false) {
+                return IR.Sum.never();
+            } else {
+                return new IR.Unreachable();
+            }
+        } else if (atom instanceof AST.Dash) {
             this.error(atom.span, "- is not allowed in this position");
         } else if (atom instanceof AST.Kind) {
-            return new IR.Universe(null, atom.i - 1);
+            return new IR.Universe(atom.i - 1);
         } else if (atom instanceof AST.Mut) {
             this.error(atom.span, "mut is not allowed in this position");
         } else if (atom instanceof AST.Refl) {
@@ -58,16 +107,40 @@ export class Lower {
         } else if (atom instanceof AST.Field) {
             this.error(atom.span, "TODO: calls");
         } else if (atom instanceof AST.Binary) {
-            const isArrow = atom.kind === AST.BinOp.Arrow;
-            if (isArrow || atom.kind == AST.BinOp.FatArrow) {
-                return this.push(() => new IR.FnType(null, isArrow, this.type(atom.left), this.type(atom.right)));
-            } else {
-                this.error(atom.span, "TODO: calls");
+            let binary: AST.Atom | null = atom;
+            let isArrow: boolean;
+            const parameters: [boolean, IR.HOType][] = [];
+            const rootScope = this.scope;
+            while (binary instanceof AST.Binary && ((isArrow = binary.kind === AST.BinOp.Arrow) || binary.kind == AST.BinOp.FatArrow)) {
+                this.scope = this.scope.push();
+                parameters.push([isArrow, this.type(binary.left)])
+                binary = binary.right;
             }
+
+            if (parameters.length > 0) {
+                for (const parameter of parameters) {
+                    if (parameter instanceof IR.DefBinding) {
+                        parameter.markInferrable();
+                    }
+                }
+                let fnType = this.type(binary);
+                let nextParamDef: [boolean, IR.HOType] | undefined;
+                while ((nextParamDef = parameters.pop()) !== undefined) {
+                    fnType = new IR.FnType(nextParamDef[0], nextParamDef[1], fnType);
+                }
+                this.scope = rootScope;
+                return fnType;
+            }
+
+            this.error(atom.span, "TODO: calls");
         } else if (atom instanceof AST.Unary) {
             this.error(atom.span, "TODO: calls");
         } else if (atom instanceof AST.Call) {
-            this.error(atom.span, "TODO: calls");
+            let fn = this.atom(atom.base, true);
+            for (const arg of atom.args) {
+                fn = this.call(atom.span, fn, arg);
+            } 
+            return fn;
         } else if (atom instanceof AST.TypeCall) {
             this.error(atom.span, "TODO: calls");
         } else if (atom instanceof AST.Product) {
@@ -83,35 +156,38 @@ export class Lower {
                 const res = this.atom(field);
                 if (res.type === undefined) {
                     isTerm = undefined;
-                } else if (!res.isPrototypicalType()) {
+                } else if (!IR.isType(res)) {
                     isTerm = true;
                 }
                 fields.push(res);
             }
             let prod: IR.Term;
-            if (isTerm === true) {
+            if (isTerm === true || term === true) {
                 prod = new IR.Product(
+                    fields as IR.Term[],
                     new IR.Product(
-                        new IR.Universe(null, 0),
-                        fields.map(f => f.type)
-                    ),
-                    fields as IR.Term[]
+                        fields.map(f => f.type),
+                        new IR.Universe(0)
+                    )
                 );
-            } else if (isTerm === false) {
-                prod = new IR.Product(new IR.Universe(null, 0), fields as IR.HOType[]);
+            } else if (isTerm === false || term === false) {
+                prod = new IR.Product(fields as IR.HOType[], new IR.Universe(0));
             } else {
-                prod = new IR.Product(null, fields);
+                prod = new IR.Product(fields);
             }
             return prod;
         } else if (atom instanceof AST.IntegerLiteral) {
-            return new IR.Number(new IR.NumberType(null), atom.value);
+            return new IR.Number(new IR.NumberType(), atom.value);
         } else if (atom instanceof AST.NumberLiteral) {
-            return new IR.Float(new IR.FloatType(null), atom.value);
+            return new IR.Float(new IR.FloatType(), atom.value);
         } else if (atom instanceof AST.Ident) {
             const res = this.scope.find(atom.span.link(this.lexer.getSource()));
             if (res === undefined) {
                 this.error(atom.span, "not found");
                 return IR.Unreachable.never();
+            }
+            if (res instanceof IR.DefBinding) {
+                return res.binding;
             }
             return res;
         }
@@ -125,7 +201,7 @@ export class Lower {
             throw new Error();
         } else if (pattern instanceof AST.Ident) {
             const name = pattern.span.link(this.lexer.getSource());
-            if (param instanceof IR.Binding && param.name === null) {
+            if (param instanceof IR.DefBinding && param.name === undefined) {
                 param.name = name;
             }
             return [[name, param]];
@@ -138,7 +214,7 @@ export class Lower {
             if (atom.expr !== null) buffer.push(atom.expr);
             if (atom.ty === null) return undefined;
             const ty = this.type(atom.ty);
-            return buffer.map(v => [v, new IR.DefBinding(ty)]);
+            return buffer.splice(0, buffer.length).map(v => [v, new IR.DefBinding(ty)]);
         }
         buffer.push(atom);
         return undefined;
@@ -156,7 +232,7 @@ export class Lower {
                 if (res === undefined) continue;
                 for (const [pattern, def] of res) {
                     paramDefs.push(def);
-                    for (const [name, term] of this.pattern(pattern, def.binding)) {
+                    for (const [name, term] of this.pattern(pattern, def)) {
                         this.scope.set(name, term);
                     }
                 }
@@ -169,9 +245,13 @@ export class Lower {
 
         if (fn.sig.ty) addPatterns(fn.sig.ty);
         addPatterns(fn.sig.params);
+
+        for (const def of paramDefs) {
+            def.markInferrable();
+        }
+
         let returnTy = fn.sig.returnTy;
-        if (returnTy === null) return;
-        if (fn.body === null) return;
+        if (returnTy === null || fn.body === null) return;
         let body: AST.Statement[] | AST.Implements | AST.Atom;
         if (fn.body === undefined) {
             if (returnTy instanceof AST.Binary && returnTy.kind === AST.BinOp.Eq) {
@@ -187,36 +267,34 @@ export class Lower {
         }
 
         if (body instanceof AST.Implements) throw new Error();
-        const block = Array.isArray(body) ? this.block(body, blockBody) : this.exprAsBlock(blockBody, body);
-        let firstParamDef = paramDefs.pop() ?? new IR.DefBinding(new IR.Product(new IR.Universe(null, 0), []));
-        let fnTerm = new IR.Fn(null, firstParamDef, block);
-        let nextParamDef: IR.DefBinding | undefined;
-        while ((nextParamDef = paramDefs.pop()) !== undefined) {
-            fnTerm = new IR.Fn(null, nextParamDef, IR.Block.trivial(fnTerm));
-        }
-        const name = fn.sig.name.link(this.lexer.getSource());
-        this.scope.set(name, new IR.Local(fnTerm));
-    }
-
-    private formBlock(body: IR.Statement[]): IR.Block {
-        let pure = true;
-        for (const stmt of body) {
-            if (stmt instanceof IR.SideEffect) {
-                pure = false;
-            } else if (stmt instanceof IR.InitializeLocal) {
-                pure &&= stmt.local.pure;
-            } else if (stmt instanceof IR.Return) {
-                pure &&= stmt.term.pure;
+        let block = Array.isArray(body) ? this.block(body, blockBody) : this.exprAsBlock(blockBody, body);
+        if (returnTy !== undefined) {
+            const type = this.type(returnTy);
+            const res = block.coerce(type);
+            if (res !== undefined) {
+                block = res;
+            } else {
+                this.error(returnTy.span, "type mismatch");
             }
         }
+        let firstParamDef = paramDefs.pop() ?? new IR.DefBinding(IR.Product.void());
+        let fnTerm = new IR.Fn(firstParamDef, block);
+        let nextParamDef: IR.DefBinding | undefined;
+        while ((nextParamDef = paramDefs.pop()) !== undefined) {
+            fnTerm = new IR.Fn(nextParamDef, IR.Block.trivial(fnTerm));
+        }
+        this.scope = this.scope.pop()
+        const name = fn.sig.name.link(this.lexer.getSource());
+        this.scope.set(name, new IR.Local(fnTerm));
     }
 
     private exprAsBlock(body: IR.Statement[], atom: AST.Atom): IR.Block {
         const term = this.atom(atom);
         body.push(new IR.Return(term));
+        return new IR.Block(new IR.Branch(term.pure, body), term.type);
     }
 
-    private branch(stmts: AST.Statement[], body: IR.Statement[] = []): IR.Branch {
+    private branch(stmts: AST.Statement[], returnType: Cell<IR.HOType>, body: IR.Statement[] = []): [branch: IR.Branch, returned: boolean] {
         let pure = true;
         for (const stmt of stmts) {
             if (stmt instanceof AST.Let) {
@@ -280,13 +358,14 @@ export class Lower {
                 if (stmt.expr === null) continue;
                 let init: IR.Term;
                 if (stmt.expr === undefined) {
-                    init = new IR.Product(new IR.Product(new IR.Universe(null, 0), []), []);
+                    init = IR.Product.unit();
                 } else {
                     init = this.atom(stmt.expr);
                 }
-                //returnType = new IR.Sum(null, [returnType, init.type]);
+                returnType.set(IR.Sum.create([returnType.get(), init.type]));
                 pure &&= init.pure;
                 body.push(new IR.Return(init));
+                return [new IR.Branch(pure, body), true];
             } else if (stmt instanceof AST.If) {
                 if (stmt.cond === null) continue;
                 const cond = this.atom(stmt.cond);
@@ -294,7 +373,7 @@ export class Lower {
 
                 const trueScope = this.scope.push(cond.pure);
                 this.scope = trueScope;
-                const trueBranch = this.branch(stmt.body);
+                const [trueBranch] = this.branch(stmt.body, returnType);
                 this.scope = trueScope.pop();
 
                 let falseBranchStmts: AST.Statement[];
@@ -308,7 +387,7 @@ export class Lower {
 
                 const falseScope = this.scope.push(cond.pure);
                 this.scope = falseScope;
-                const falseBranch = this.branch(falseBranchStmts);
+                const [falseBranch] = this.branch(falseBranchStmts, returnType);
                 this.scope = falseScope.pop();
 
                 body.push(new IR.If(cond, trueBranch, falseBranch));
@@ -318,12 +397,33 @@ export class Lower {
                 this.scope.fuse(trueScope, falseScope);
             }
         }
-        return new IR.Branch(pure, body);
+        return [new IR.Branch(pure, body), false];
     }
 
-    private block(stmts: AST.Statement[], body: IR.Statement[]): IR.Block {}
+    private block(stmts: AST.Statement[], body: IR.Statement[]): IR.Block {
+        const returnType: Cell<IR.HOType> = new Cell(IR.Sum.never()); // TODO: fix
+        const [branch, returned] = this.branch(stmts, returnType, body);
+        if (!returned) {
+            const init = IR.Product.unit();
+            returnType.set(IR.Sum.create([returnType.get(), init.type]));
+            body.push(new IR.Return(init));
+        }
+        return new IR.Block(branch, returnType.get());
+    }
 
     private global(global: AST.Global) {}
+}
+
+class Cell<T> {
+    constructor(private inner: T) {}
+
+    public get() {
+        return this.inner;
+    }
+
+    public set(x: T) {
+        this.inner = x;
+    }
 }
 
 class Scope {
@@ -342,12 +442,12 @@ class Scope {
             } else {
                 alternateLocal = alternateAssignment[1];
             }
-            this.set(name, new IR.Phi(b1.pure && b2.pure, null, [newLocal, alternateLocal]));
+            this.set(name, new IR.Phi(b1.pure && b2.pure, [newLocal, alternateLocal]));
         }
         for (const [name, [oldLocal, newLocal]] of b2.assignments.entries()) {
             let alternateAssignment = b1.assignments.get(name);
             if (alternateAssignment === undefined) {
-                this.set(name, new IR.Phi(b1.pure && b2.pure, null, [oldLocal, newLocal]));
+                this.set(name, new IR.Phi(b1.pure && b2.pure, [oldLocal, newLocal]));
             }
         }
     }

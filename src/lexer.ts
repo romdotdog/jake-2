@@ -36,8 +36,8 @@ export default class Lexer {
         const end = this.lineCol(x.end);
         const ecol = start.line === end.line ? end.col : start.eol;
         console.log(`${this.path}:${start.line}:${start.col}: ${message}`);
-        console.log(this.src.substring(start.sol, start.eol));
-        console.log(" ".repeat(start.col - 1) + "^".repeat(ecol - start.col));
+        console.log(this.src.substring(start.sol, start.eol - 1));
+        console.log(" ".repeat(start.col - 1) + "^".repeat(ecol - start.col) + "\n");
     }
 
     public getSource() {
@@ -160,6 +160,7 @@ export default class Lexer {
                         while (true) {
                             while (this.andNotEOF(this.get() != "*"));
                             if (this.orEOF(this.get() == "/")) {
+                                this.skip();
                                 break;
                             }
                         }

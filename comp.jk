@@ -1,0 +1,15 @@
+function mul<A,B,C: **>(f: B -> C, g: A -> B, x: A): C {
+    return f(g(x));
+}
+
+function Id(x: *): * {
+    return x;
+}
+
+function id(x: []): [] {
+    return x;
+}
+
+function main(): * -> * {
+    return mul(Id, Id); 
+}
