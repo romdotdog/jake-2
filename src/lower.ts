@@ -57,26 +57,32 @@ export class Lower {
 
     private call(span: Span, fn: IR.Term, argAtom: AST.Atom | null, ctx: IR.UnificationContext = new Map()): IR.Term {
         // TODO: dash
+        ctx.level = 0;
         const defs: IR.DefBinding[] = [];
         const arg = this.atom(argAtom);
+        
         if (this.innerCall(span, fn.type, arg, ctx)) {
+            const universeCtx = new IR.RewritingContext(ctx);
+            let fnType = fn.type as IR.FnType;
+            if (ctx.level > 0) {
+                fnType = fnType.updateUniverseLevel(ctx.level, universeCtx);
+            }
             while(true) {
-                const fnType = fn.type as IR.FnType;
                 if (fnType.source instanceof IR.DefBinding) {
-                    const inferred = ctx.get(fnType.source);
+                    const inferred: IR.HOType | undefined = ctx.get(fnType.source);
                     if (inferred !== undefined) {
-                        fn = new IR.Call(fn, inferred);
+                        fn = new IR.Call(fn, fnType, inferred, universeCtx);
+                        fnType = fn.type as IR.FnType;
                         continue;
                     } else if (fnType.source.inferrable) {
-                        const def = new IR.DefBinding(fnType.source);
-                        def.name = fnType.source.name;
-                        def.inferrable = true;
+                        const def = new IR.DefBinding(fnType.source.hoType, true, fnType.source.name);
                         defs.push(def);
-                        fn = new IR.Call(fn, def.binding);
+                        fn = new IR.Call(fn, fnType, def.binding, universeCtx);
+                        fnType = fn.type as IR.FnType;
                         continue;
                     }
                 }
-                fn = new IR.Call(fn, arg);
+                fn = new IR.Call(fn, fnType, arg, universeCtx);
                 let nextDef: IR.DefBinding | undefined;
                 while ((nextDef = defs.pop()) !== undefined) {
                     fn = new IR.Fn(nextDef, IR.Block.trivial(fn));

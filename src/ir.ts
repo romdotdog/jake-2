@@ -7,14 +7,32 @@ interface Subtyping {
     isSupertypeOfOnly(type: HOType, ctx: UnificationContext): boolean;
 }
 
-export type UnificationContext = Map<DefBinding, HOType>;
-export type BetaReductionContext = Map<DefBinding, DefBinding>;
+export type UnificationContext = Map<DefBinding, HOType> & { level?: number };
+
+export class RewritingContext {
+    private inner: Map<DefBinding, DefBinding> = new Map();
+    constructor(private unificationContext?: UnificationContext) {}
+
+    public get(x: DefBinding): DefBinding | undefined {
+        return this.inner.get(x);
+    }
+
+    public set(x: DefBinding, y: DefBinding) {
+        this.inner.set(x, y);
+        if (this.unificationContext !== undefined) {
+            const z = this.unificationContext.get(x);
+            if (z !== undefined) {
+                this.unificationContext.set(y, z);
+            }
+        }
+    }
+}
 
 function assert(cond: boolean) {
     if (!cond) throw new Error();
 }
 
-export type HOType = Omit<Value, 'betaReduce'> & Subtyping & { betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType };
+export type HOType = Omit<Omit<Value, 'betaReduce'>, 'updateUniverseLevel'> & Subtyping & { betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType, updateUniverseLevel(level: number, ctx: RewritingContext): HOType };
 export abstract class Term {
     constructor(public pure: boolean) {}
 
@@ -22,7 +40,11 @@ export abstract class Term {
 
     public abstract coerce(type: HOType): Term | undefined;
 
-    public abstract betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): Term;
+    public abstract betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): Term;
+
+    public abstract updateUniverseLevel(level: number, ctx: RewritingContext): Term;
+
+    public abstract toString(): string;
 }
 
 export abstract class Value extends Term {}
@@ -58,7 +80,15 @@ export class Universe extends Lazy {
 
     public isSubtypeOf(type: HOType, ctx: UnificationContext): boolean {
         if(type.isSupertypeOfOnly(this, ctx)) return true;
-        return type instanceof Universe && type.level >= this.level;
+        if (type instanceof Universe) {
+            if (ctx.level === undefined) {
+                return type.level >= this.level;
+            } else {
+                ctx.level += Math.max(0, this.level - type.level);
+                return true;
+            }
+        }
+        return false;
     }
 
     public mostGeneral(other: Universe) {
@@ -69,8 +99,16 @@ export class Universe extends Lazy {
         return new Universe(this.level + 1);
     }
 
-    public betaReduce(def: DefBinding, sub: Term): HOType {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
         return this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): Universe {
+        return new Universe(this.level + level, this.cachedType?.updateUniverseLevel(level, ctx));
+    }
+
+    public toString(): string {
+        return "*".repeat(this.level + 1);
     }
 }
 
@@ -108,6 +146,14 @@ export class Unreachable extends Value {
         return this;
     }
 
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
+        return new Unreachable(this.cachedType?.updateUniverseLevel(level, ctx));
+    }
+
+    public toString(): string {
+        return "unreachable";
+    }
+
     get type(): HOType {
         if (this.cachedType) return this.cachedType;
         // if this.cachedType === null, T extends Sum
@@ -138,6 +184,14 @@ export class Fn extends Lazy {
     protected inferType(): FnType {
         return new FnType(this.body.branch.pure, this.param, this.body.type);
     }
+
+    public updateUniverseLevel(level: number): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return `${this.param.toString()} |-> ${this.body.toString()}`
+    }
 }
 
 export class Number extends Value {
@@ -155,6 +209,14 @@ export class Number extends Value {
 
     public betaReduce(def: DefBinding, sub: Term): Term {
         return this;
+    }
+
+    public updateUniverseLevel(level: number): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return this.value.toString();
     }
 
     get type(): HOType {
@@ -177,6 +239,14 @@ export class Float extends Value {
 
     public betaReduce(def: DefBinding, sub: Term): Term {
         return this;
+    }
+
+    public updateUniverseLevel(level: number): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return this.value.toString();
     }
 
     get type(): HOType {
@@ -206,6 +276,14 @@ export class NumberType extends Lazy {
         return this;
     }
 
+    public updateUniverseLevel(level: number): HOType {
+        return this;
+    }
+
+    public toString(): string {
+        throw new Error();
+    }
+
     protected inferType(): Universe {
         return new Universe(0);
     }
@@ -213,6 +291,10 @@ export class NumberType extends Lazy {
 
 export class FloatType extends NumberType {
     public coerce(type: HOType): Term | undefined {
+        throw new Error();
+    }
+
+    public toString(): string {
         throw new Error();
     }
 
@@ -229,6 +311,10 @@ export class I32 extends NumberType {
         }
     }
 
+    public toString(): string {
+        return "i32";
+    }
+
     public isSubtypeOf(type: HOType, ctx: UnificationContext): boolean {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof I32;
@@ -240,12 +326,20 @@ export class I64 extends NumberType {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof I64;
     }
+
+    public toString(): string {
+        return "i64";
+    }
 }
 
 export class U32 extends NumberType {
     public isSubtypeOf(type: HOType, ctx: UnificationContext): boolean {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof U32;
+    }
+
+    public toString(): string {
+        return "u32";
     }
 }
 
@@ -254,12 +348,20 @@ export class U64 extends NumberType {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof U64;
     }
+
+    public toString(): string {
+        return "u64";
+    }
 }
 
 export class F32 extends FloatType {
     public isSubtypeOf(type: HOType, ctx: UnificationContext): boolean {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof F32;
+    }
+
+    public toString(): string {
+        return "f32";
     }
 }
 
@@ -268,14 +370,16 @@ export class F64 extends FloatType {
         if (type.isSupertypeOfOnly(this, ctx)) return true;
         return type instanceof F64;
     }
+
+    public toString(): string {
+        return "f64";
+    }
 }
 
 export class DefBinding extends Value {
     private cachedBinding?: Binding;
-    public inferrable?: boolean;
-    public name?: string;
 
-    constructor(public hoType: HOType) {
+    constructor(public hoType: HOType, public inferrable?: boolean, public name?: string) {
         super(true);
     }
 
@@ -300,12 +404,20 @@ export class DefBinding extends Value {
         return false;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
-        const newDefBinding = new DefBinding(this.hoType.betaReduce(def, sub, ctx));
-        newDefBinding.inferrable = this.inferrable;
-        newDefBinding.name = this.name;
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
+        const newDefBinding = new DefBinding(this.hoType.betaReduce(def, sub, ctx), this.inferrable, this.name);
         ctx.set(this, newDefBinding);
         return newDefBinding;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): DefBinding {
+        const newDefBinding = new DefBinding(this.hoType.updateUniverseLevel(level, ctx), this.inferrable, this.name);
+        ctx.set(this, newDefBinding);
+        return newDefBinding;
+    }
+
+    public toString(): string {
+        return `(${this.name ?? "_"}: ${this.hoType.toString()})`
     }
 
     get type(): HOType {
@@ -371,11 +483,19 @@ export class Binding extends Value {
         return this === type;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
         if (this.def === def) {
             return sub as HOType;
         }
         return ctx.get(this.def)?.binding ?? this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
+        return ctx.get(this.def)?.binding ?? this;
+    }
+
+    public toString(): string {
+        return this.def.name ?? "_";
     }
 
     get type(): HOType {
@@ -419,8 +539,16 @@ export class FnType extends Lazy {
         return false;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
         return new FnType(this.pureFunction, this.source.betaReduce(def, sub, ctx), this.target.betaReduce(def, sub, ctx), this.cachedType);
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): FnType {
+        return new FnType(this.pureFunction, this.source.updateUniverseLevel(level, ctx), this.target.updateUniverseLevel(level, ctx), this.cachedType);
+    }
+
+    public toString(): string {
+        return `(${this.source.toString()} ${this.pureFunction ? "->" : "=>"} ${this.target.toString()})`;
     }
 
     protected inferType(): Universe {
@@ -469,7 +597,15 @@ export class AmbiguousProductType extends Lazy {
         return false;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
+        throw new Error();
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
+        throw new Error();
+    }
+
+    public toString(): string {
         throw new Error();
     }
 
@@ -523,8 +659,12 @@ export class Product extends Value {
         return false;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
-        return new Product(this.fields.map(f => f.betaReduce(def, sub, ctx)), this.cachedType);
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
+        return new Product(this.fields.map(f => f.betaReduce(def, sub, ctx)), this.cachedType.betaReduce(def, sub, ctx));
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
+        return new Product(this.fields.map(f => f.updateUniverseLevel(level, ctx)), this.cachedType.updateUniverseLevel(level, ctx));
     }
 
     public coerce(type: HOType): Term | undefined {
@@ -532,6 +672,10 @@ export class Product extends Value {
         if (this.type.isSubtypeOf(type, new Map())) {
             return new Product(this.fields, type);
         }
+    }
+
+    public toString(): string {
+        return `[${this.fields.map(f => f.toString()).join(", ")}]`
     }
 
     get type(): HOType {
@@ -568,7 +712,7 @@ export class Sum extends Lazy {
             const summand = summands[i];
             let isRedundant = false;
             for (const otherSummand of summands) {
-                if (summand.isSubtypeOf(otherSummand, new Map())) {
+                if (summand !== otherSummand && summand.isSubtypeOf(otherSummand, new Map())) {
                     isRedundant = true;
                     break;
                 }
@@ -583,7 +727,7 @@ export class Sum extends Lazy {
         if (summands.length === 1) {
             return summands[0];
         } else {
-            return new Sum(summands, cachedType)
+            return new Sum(summands, cachedType);
         }
     }
 
@@ -603,8 +747,16 @@ export class Sum extends Lazy {
         return this.summands.every(s => s.isSubtypeOf(type, ctx));
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
-        return new Sum(this.summands.map(s => s.betaReduce(def, sub, ctx)), this.cachedType);
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
+        return new Sum(this.summands.map(s => s.betaReduce(def, sub, ctx)), this.cachedType?.betaReduce(def, sub, ctx));
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
+        return new Sum(this.summands.map(s => s.updateUniverseLevel(level, ctx)), this.cachedType?.updateUniverseLevel(level, ctx));
+    }
+
+    public toString(): string {
+        return `(${this.summands.map(s => s.toString()).join(" | ")})`;
     }
 
     protected inferType(): HOType {
@@ -642,8 +794,16 @@ export class Phi extends Term {
         return new Phi(this.pure, newLocals, type);
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): Term {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): Term {
         return this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return `ϕ(${this.locals.map(l => l.toString()).join(", ")})`
     }
 
     get type(): HOType {
@@ -651,37 +811,43 @@ export class Phi extends Term {
     }
 }
 
-export class Call extends Lazy {
-    private underlyingFnType: FnType;
-    constructor(public fn: Term, public argument: Term, cachedType?: HOType) {
-        let underlyingFnType: FnType;
-        if (fn.type instanceof FnType) {
-            underlyingFnType = fn.type;
-        } else if (fn.type instanceof Constant && fn.type.initializer instanceof FnType) {
-            underlyingFnType = fn.type.initializer;
+export class Call extends Term {
+    private cachedType: HOType;
+    constructor(public fn: Term, public underlyingFnType: FnType, public argument: Term, ctxOrType: RewritingContext | HOType) {
+        super(underlyingFnType.pureFunction);
+        if (ctxOrType instanceof RewritingContext) {
+            if (this.underlyingFnType.source instanceof DefBinding) {
+                this.cachedType = this.underlyingFnType.target.betaReduce(this.underlyingFnType.source, this.argument, ctxOrType);
+            } else {
+                this.cachedType = this.underlyingFnType.target;
+            }
         } else {
-            throw new Error();
+            this.cachedType = ctxOrType;
         }
-        super(underlyingFnType.pureFunction, cachedType);
-        this.underlyingFnType = underlyingFnType;
     }
 
     public coerce(type: HOType): Term | undefined {
-        const newFn = this.fn.coerce(new FnType(this.underlyingFnType.pureFunction, this.underlyingFnType.source, type));
+        const newFnType = new FnType(this.underlyingFnType.pureFunction, this.underlyingFnType.source, type);
+        const newFn = this.fn.coerce(newFnType);
         if (newFn !== undefined) {
-            return new Call(newFn, this.argument, type);
+            return new Call(newFn, newFnType, this.argument, type);
         }
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): Term {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): Term {
         return this;
     }
 
-    protected inferType(): HOType {
-        if (this.underlyingFnType.source instanceof DefBinding) {
-            return this.underlyingFnType.target.betaReduce(this.underlyingFnType.source, this.argument, new Map());
-        }
-        return this.underlyingFnType.target;
+    public updateUniverseLevel(level: number, ctx: RewritingContext): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return `${this.fn.toString()}(${this.argument.toString()})`
+    }
+
+    get type() {
+        return this.cachedType;
     }
 }
 
@@ -697,8 +863,16 @@ export class Local extends Value {
         }
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): Term {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): Term {
         return this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return this.initializer.toString();
     }
 
     get type() {
@@ -729,7 +903,11 @@ export class Constant<V extends Value> extends Local {
         return this === type;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): HOType {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): HOType {
+        return this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): HOType {
         return this;
     }
 
@@ -753,8 +931,16 @@ export class Block extends Value {
         return this.cachedType;
     }
 
-    public betaReduce(def: DefBinding, sub: Term, ctx: BetaReductionContext): Term {
+    public betaReduce(def: DefBinding, sub: Term, ctx: RewritingContext): Term {
         return this;
+    }
+
+    public updateUniverseLevel(level: number, ctx: RewritingContext): Term {
+        return this;
+    }
+
+    public toString(): string {
+        return "{ block }";
     }
 
     public static trivial(term: Value): Block {
